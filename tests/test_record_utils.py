@@ -255,3 +255,10 @@ def test_backup_with_bad_ai_exercises_rejected(custom_list, ex_id):
     current = [rec(rid="keep")]
     result, err = ru.try_restore(current, text, CATALOG)
     assert err and result is current
+
+
+def test_prune_keeps_items_in_current_recommendation():
+    custom = ru.add_custom({}, ai_ex("ai-00000000000a", "운동A"), CATALOG)
+    custom = ru.add_custom(custom, ai_ex("ai-00000000000b", "운동B"), CATALOG)
+    assert ru.prune_custom(custom, []) == {}
+    assert set(ru.prune_custom(custom, [], keep=["ai-00000000000b", "squat"])) == {"ai-00000000000b"}

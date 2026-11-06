@@ -15,6 +15,12 @@ openai = pytest.importorskip("openai")
 FAKE_KEY = "sk-test-SECRET123"
 
 
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+
 @pytest.fixture
 def env_file(tmp_path):
     p = tmp_path / ".env"
@@ -76,11 +82,22 @@ def test_load_settings_empty_key(tmp_path, content):
     assert ai_client.load_settings(p) == (None, ai_client.DEFAULT_MODEL)
 
 
-def test_missing_env_file_ignores_process_env(tmp_path, monkeypatch):
+def test_env_file_wins_over_process_env(env_file, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-process-env")
-    key, _ = ai_client.load_settings(tmp_path / "no.env")
-    assert key is None
-    assert ai_client.unavailable_reason(tmp_path / "no.env")
+    key, _ = ai_client.load_settings(env_file)
+    assert key == FAKE_KEY
+
+
+def test_process_env_is_used_when_no_env_file(tmp_path, monkeypatch):  # Streamlit Secrets가 전달하는 경우
+    monkeypatch.setenv("OPENAI_API_KEY", "  sk-from-secrets  ")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6-sol")
+    assert ai_client.load_settings(tmp_path / "no.env") == ("sk-from-secrets", "gpt-6-sol")
+    assert ai_client.unavailable_reason(tmp_path / "no.env") is None
+
+
+def test_no_key_anywhere_is_unavailable(tmp_path):
+    assert ai_client.load_settings(tmp_path / "no.env") == (None, ai_client.DEFAULT_MODEL)
+    assert "Secrets" in ai_client.unavailable_reason(tmp_path / "no.env")
 
 
 def test_available_with_key(env_file):

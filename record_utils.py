@@ -373,7 +373,7 @@ def remove_custom(custom, exercise_id, records):
     return {k: v for k, v in custom.items() if k != exercise_id}
 
 
-def prune_custom(custom, records):
-    """'내 운동 목록'에 저장했거나 기록에 쓰인 AI 운동만 남긴다."""
-    used = {r["exercise_id"] for r in records}
+def prune_custom(custom, records, keep=()):
+    """'내 운동 목록'에 저장했거나 기록에 쓰였거나 keep(현재 기록하기 목록)에 있는 AI 운동만 남긴다."""
+    used = {r["exercise_id"] for r in records} | set(keep)
     return {k: v for k, v in custom.items() if v["saved"] or k in used}

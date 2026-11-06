@@ -1,12 +1,14 @@
 """OpenAI 호출 계층: .env 키 로드, 운동 후보 생성 요청, 오류 분류.
 
-- AI 운동 생성은 로컬 전용 기능이다. 키는 프로젝트 루트의 .env에서만 읽는다(환경 변수·Secrets 미사용).
-  배포본처럼 .env가 없으면 키가 없는 것으로 보고 AI 기능만 비활성화한다.
+- 키는 프로젝트 루트의 .env를 먼저 보고, 없으면 환경 변수 OPENAI_API_KEY를 쓴다.
+  Streamlit Community Cloud는 Secrets의 최상위 값을 환경 변수로 전달하므로 배포 앱은 Secrets에 키를 등록한다.
+  키가 없으면 AI 기능만 비활성화한다.
 - 키·.env 내용·프롬프트를 화면·로그·예외 메시지에 넣지 않는다. 오류는 AIError(고정 한국어 문구)로 바꾸고
   원래 예외는 연결하지 않는다(OpenAI 인증 오류 메시지에는 키 일부가 들어 있다).
 - 응답은 OpenAI 쪽에 저장하지 않도록 store=False로 요청한다. 타임아웃·재시도는 최소로 둔다.
 """
 import importlib.util
+import os
 from pathlib import Path
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
@@ -31,8 +33,8 @@ def load_settings(env_path=None):
             values = dotenv_values(env_path)
     except Exception:  # dotenv 미설치, 인코딩 오류 등: 키 없음으로 처리
         values = {}
-    key = (values.get("OPENAI_API_KEY") or "").strip() or None
-    model = (values.get("OPENAI_MODEL") or "").strip() or DEFAULT_MODEL
+    key = (values.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip() or None
+    model = (values.get("OPENAI_MODEL") or os.environ.get("OPENAI_MODEL") or "").strip() or DEFAULT_MODEL
     return key, model
 
 
@@ -40,7 +42,7 @@ def unavailable_reason(env_path=None):
     """AI 기능을 쓸 수 없으면 그 이유(한국어), 쓸 수 있으면 None."""
     key, _ = load_settings(env_path)
     if not key:
-        return "OPENAI_API_KEY가 설정되지 않았습니다(로컬 .env 파일 필요)."
+        return "OPENAI_API_KEY가 설정되지 않았습니다(로컬은 .env, 배포는 Streamlit Secrets에 설정)."
     if importlib.util.find_spec("openai") is None:
         return "openai 패키지가 설치되지 않았습니다."
     return None

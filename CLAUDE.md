@@ -1,22 +1,22 @@
 # 오늘의 운동기록 (Streamlit)
 
-날짜별로 부위(어깨·가슴·등·하체)를 고르고 기본 운동 후보와 한조바디 자세 영상을 보며 세트별 중량·횟수를 기록하는 한국어 웹앱. 교육용 개인 미니 프로젝트. GitHub: yhbaeee/workout-log (public), Streamlit Community Cloud 배포: https://workout-log-sxfzv8bszvclawnrozr2nb.streamlit.app/
+AI가 추천한 운동(키가 없으면 기본 운동 26개 목록)을 한조바디 자세 영상과 함께 보고 세트별 중량·횟수를 기록하는 한국어 웹앱. 교육용 개인 미니 프로젝트. GitHub: yhbaeee/workout-log-2 (public). v1(AI 후보 생성)은 yhbaeee/workout-log에 배포되어 있다.
 
 ## 명령
 - 실행: `streamlit run app.py` (로컬은 `.venv` 사용: `.venv\Scripts\python -m streamlit run app.py`)
-- 테스트: `.venv\Scripts\python -m pytest -q tests` (118개: record_utils 67·ai_exercises 28·ai_client 23). 폴더명에 `[ ]`가 있으면 `tests` 경로를 빼면 0개 수집된다.
+- 테스트: `.venv\Scripts\python -m pytest -q tests` (125개: record_utils 68·ai_exercises 32·ai_client 25). 폴더명에 `[ ]`가 있으면 `tests` 경로를 빼면 0개 수집된다.
 - 브라우저 점검: Playwright(chromium)는 개발용으로만 `.venv`에 설치. `requirements.txt`에는 `streamlit`, `openai`, `python-dotenv`만 둔다.
 
 ## 구조
 - `app.py`: UI와 세션 상태·콜백만. 검증·기록 변환 로직을 넣지 않는다.
 - `record_utils.py`: Streamlit 비의존 순수 로직(검증, 추가/수정/삭제, JSON 내보내기·복원, AI 운동 정의 검증·추가·삭제·정리). 입력 리스트·사전을 변경하지 않고 새 객체를 반환. 오류는 `ValidationError`(사용자에게 보여도 되는 메시지).
-- `ai_exercises.py`: AI 후보 생성의 순수 로직(요청 검증, 지시문·JSON 스키마, 응답 정리: 링크·수치 처방 제거, 조건 불일치·이름 중복 제외).
+- `ai_exercises.py`: AI 추천의 순수 로직(요청 검증, 지시문·JSON 스키마, 응답 정리: 링크·수치 처방 제거, 기본 운동 연결·기존 AI 운동 재사용·새 AI 운동 분류, 조건 불일치·이름 중복 제외, 한조바디 채널 검색 링크).
 - `ai_client.py`: OpenAI 호출만. `.env` 로드, Responses API(JSON 스키마, `store=False`), 예외를 `AIError`(고정 한국어 문구)로 변환. `DEFAULT_MODEL`·타임아웃·재시도 상수.
 - `data/exercises.json`: 운동 카탈로그 26개(어깨 7·가슴 7·등 6·하체 6; 부위/장비/중량 기준/영상). `data/demo_records.json`: 가상 데모(record_id는 `demo-` 접두사).
 - `docs/video_research.md`: 영상 조사 근거. `docs/screenshots/`: Playwright 캡처.
 - `.env`(Git 제외): `OPENAI_API_KEY`, 선택 `OPENAI_MODEL`. `.env.example`에는 키 이름만.
 - `_prev/`: 초기 버전 보관(수정 금지, Git 제외). 현재 작업 폴더에는 없다.
-- 제출용 작업 폴더는 Git 저장소가 아니며 오프라인 제출용이다(압축 시 `.env`·`.venv`·`~$*.docx` 제외). Git 작업은 별도 복제본(`workout-log` 폴더)에서 하고, 작업 폴더의 변경 파일을 복사해 커밋한다.
+- 오프라인 제출용 작업 폴더가 따로 있고, 이 저장소(`workout-log-2`)는 v1(`workout-log`) 이력 위에 v2를 얹은 Git 작업 폴더다.
 
 ## 규칙
 - 모든 UI 문구는 한국어. 오류 메시지에 내부 예외를 그대로 노출하지 않는다.
@@ -26,8 +26,8 @@
 - 저장·수정·삭제·복원은 `on_click` 콜백에서 처리하고 결과는 `flash`로 표시한다.
 - 입력칸 기본값은 비워 둔다(운동 처방처럼 보이는 기본값 금지). 상한: 중량 1000kg, 횟수 1000회, 메모 200자.
 - 영상 정보(제목·채널·URL·ID·길이·시작 시각)는 실제로 확인한 것만 넣는다. 추측 금지, 미확인은 `null`. 한조바디가 아닌 채널로 임의 대체 금지. 영상이 없으면 '참고 영상 준비 중'.
-- 앱 실행 중 유튜브 검색·크롤링 없음. 외부 API 호출은 AI 운동 후보 생성(OpenAI)뿐이며 로컬 `.env`에 키가 있을 때만 켜진다(배포본은 키 미등록 → 비활성). 경로는 `Path(__file__)` 기준.
-- AI 기능: 키는 `.env`에서만 읽고(환경 변수·Secrets 미사용) 화면·로그·오류 메시지·커밋에 넣지 않는다. 모델에는 요청 조건과 해당 부위의 기존 운동명만 보내고 기록·중량·메모·개인정보는 보내지 않는다. 모델이 만든 URL·영상 ID·길이·타임스탬프는 표시하지 않으며 검색 키워드는 텍스트로만 보인다. AI 운동은 `exercises.json`에 쓰지 않고 세션(`custom_ex`)과 백업 JSON(v2 `custom_exercises`)에만 둔다. 기본 운동과 구분해 'AI 생성'으로 표시하고, 기록이 남은 AI 운동은 삭제를 막는다.
+- 앱 실행 중 유튜브 검색·크롤링·조회 없음(한조바디 채널 검색 링크는 URL만 만들고 앱이 열지 않는다). 외부 API 호출은 AI 운동 추천(OpenAI)뿐이며 키가 있을 때만 켜진다(로컬 `.env` → 환경 변수(배포: Streamlit Secrets) 순, 없으면 비활성이고 기록하기는 기본 운동 목록으로 대체). 경로는 `Path(__file__)` 기준.
+- AI 기능: 키는 `.env`, 없으면 환경 변수 `OPENAI_API_KEY`(Streamlit Secrets가 전달)에서 읽고 화면·로그·오류 메시지·커밋에 넣지 않는다. 모델에는 요청 조건과 해당 부위의 기본 운동명·저장된 AI 운동명만 보내고 기록·중량·메모·개인정보는 보내지 않는다. 모델이 만든 URL·영상 ID·길이·타임스탬프는 표시하지 않는다. 기본 운동과 이름이 같은 추천은 기본 운동 ID로 연결해 확인된 영상을 쓰고, 새 AI 운동은 한조바디 채널 검색 링크만 제공한다. AI 운동은 `exercises.json`에 쓰지 않고 세션(`custom_ex`)과 백업 JSON(v2 `custom_exercises`)에만 둔다. 흐름: 추천 → `rec_ids`(기록하기 목록) 등록 + `goto_tab`으로 탭 이동(`st.tabs(key="main_tab", on_change="rerun")`, 탭을 그리기 전에 값 설정). 기록이 남은 AI 운동은 삭제를 막는다.
 - 운동 효과·부상 판단, 개인별 중량 처방, 1RM·볼륨·칼로리 계산은 넣지 않는다.
 - 새 의존성은 꼭 필요할 때만 추가.
 
@@ -52,6 +52,12 @@
 - Playwright(Chrome) 브라우저 점검: 리허설은 가짜 응답 서버(스크래치패드 launcher로 app.py 실행, API 미호출)로 먼저 돌린 뒤 실제 서버에서 1회 호출. 하체/상관없음/초보/4개/추가 요청: 16.6초, 받은 4개→채택 4개. 후보 추가·저장·세트 기록·기록 보기 AI 표시 정상, 모바일 390px 가로 스크롤 없음.
 - 점검 시: Streamlit은 내부 `[data-testid=stMain]`이 스크롤되므로 `full_page` 캡처가 화면 높이만 찍힌다. 창 높이를 scrollHeight로 늘린 뒤 요소 좌표로 clip한다. 1.67에는 `stVerticalBlockBorderWrapper` testid가 없으므로 버튼 역할·순서로 찾는다.
 
+## 점검 이력 (v2, AI 중심 흐름 재구성)
+- pytest 125개, Streamlit AppTest 36개 항목 통과(API 미호출): 키 없음 대체 경로, 추천→자동 이동→기록→기록 보기, 기본 운동 연결·재사용, 내 목록, 삭제 차단, 백업·복원, 오류·횟수 제한, 키 비노출.
+- Playwright(Chrome): 가짜 응답 리허설 서버로 먼저 통과(17항목)한 뒤 실제 서버에서 실제 호출 2회. ① 하체/상관없음/초보/4개 → 기본 운동 4개 연결, ② 하체/맨몸/초보/4개 → 새 AI 운동 2개 채택·조건 불일치 2개 제외(14.9초). 추천→탭 자동 이동→세트 저장→기록 보기(날짜 자동 맞춤)→생성 과정→내 운동 목록, 모바일 390px 가로 스크롤 없음(16항목).
+- 발견·수정: 추천 직후 상단 안내 문구가 첫 입력 때 사라지면서 위치가 밀려 열어 둔 expander가 닫히던 문제 → `show_flash`가 `st.empty()` 자리를 항상 남기도록 수정.
+- 주의: AI가 조건과 다른 운동을 섞어 보내면(예: 맨몸 요청에 장비 운동) 제외하므로 요청 개수보다 적게 등록될 수 있다.
+
 ## 배포
-- Community Cloud: 저장소 `yhbaeee/workout-log`, 브랜치 `main`, 파일 `app.py`, Python 3.12 권장(로컬 `.venv`는 3.12). AI 기능은 로컬 전용이라 Secrets에 키를 등록하지 않는다.
+- Community Cloud: 저장소 `yhbaeee/workout-log-2`, 브랜치 `main`, 파일 `app.py`, Python 3.12. 앱 설정 Secrets에 `OPENAI_API_KEY = "키"`를 등록하면 AI가 동작한다(`.env`는 저장소에 없다). 배포 URL: (배포 후 기입).
 - push하면 배포 앱이 재배포된다. 외부 공개·push는 사용자 확인 후 진행.
