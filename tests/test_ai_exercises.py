@@ -210,3 +210,10 @@ def test_parse_with_no_valid_items_rejected():
         ai.parse_response(response(item("x", part="등")), req(), CATALOG)
     with pytest.raises(ru.ValidationError):  # 설명이 전부 수치 처방이면 제외
         ai.parse_response(response(item(description="12회씩 4세트 한다.")), req(), CATALOG)
+
+
+def test_extra_examples_are_valid_requests():
+    assert len(ai.EXTRA_EXAMPLES) == 4 and len(set(ai.EXTRA_EXAMPLES)) == 4
+    for text in ai.EXTRA_EXAMPLES:
+        assert not ai.mentions_medical(text) and not ru.URL_RE.search(text)
+        assert req(extra=text)["extra"] == text

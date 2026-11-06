@@ -4,7 +4,7 @@ AI가 추천한 운동(키가 없으면 기본 운동 26개 목록)을 한조바
 
 ## 명령
 - 실행: `streamlit run app.py` (로컬은 `.venv` 사용: `.venv\Scripts\python -m streamlit run app.py`)
-- 테스트: `.venv\Scripts\python -m pytest -q tests` (125개: record_utils 68·ai_exercises 32·ai_client 25). 폴더명에 `[ ]`가 있으면 `tests` 경로를 빼면 0개 수집된다.
+- 테스트: `.venv\Scripts\python -m pytest -q tests` (126개: record_utils 68·ai_exercises 33·ai_client 25). 폴더명에 `[ ]`가 있으면 `tests` 경로를 빼면 0개 수집된다.
 - 브라우저 점검: Playwright(chromium)는 개발용으로만 `.venv`에 설치. `requirements.txt`에는 `streamlit`, `openai`, `python-dotenv`만 둔다.
 
 ## 구조
@@ -53,7 +53,7 @@ AI가 추천한 운동(키가 없으면 기본 운동 26개 목록)을 한조바
 - 점검 시: Streamlit은 내부 `[data-testid=stMain]`이 스크롤되므로 `full_page` 캡처가 화면 높이만 찍힌다. 창 높이를 scrollHeight로 늘린 뒤 요소 좌표로 clip한다. 1.67에는 `stVerticalBlockBorderWrapper` testid가 없으므로 버튼 역할·순서로 찾는다.
 
 ## 점검 이력 (v2, AI 중심 흐름 재구성)
-- pytest 125개, Streamlit AppTest 36개 항목 통과(API 미호출): 키 없음 대체 경로, 추천→자동 이동→기록→기록 보기, 기본 운동 연결·재사용, 내 목록, 삭제 차단, 백업·복원, 오류·횟수 제한, 키 비노출.
+- pytest 126개, Streamlit AppTest 36개 항목 통과(API 미호출): 키 없음 대체 경로, 추천→자동 이동→기록→기록 보기, 기본 운동 연결·재사용, 내 목록, 삭제 차단, 백업·복원, 오류·횟수 제한, 키 비노출.
 - Playwright(Chrome): 가짜 응답 리허설 서버로 먼저 통과(17항목)한 뒤 실제 서버에서 실제 호출 2회. ① 하체/상관없음/초보/4개 → 기본 운동 4개 연결, ② 하체/맨몸/초보/4개 → 새 AI 운동 2개 채택·조건 불일치 2개 제외(14.9초). 추천→탭 자동 이동→세트 저장→기록 보기(날짜 자동 맞춤)→생성 과정→내 운동 목록, 모바일 390px 가로 스크롤 없음(16항목).
 - 발견·수정: 추천 직후 상단 안내 문구가 첫 입력 때 사라지면서 위치가 밀려 열어 둔 expander가 닫히던 문제 → `show_flash`가 `st.empty()` 자리를 항상 남기도록 수정.
 - 주의: AI가 조건과 다른 운동을 섞어 보내면(예: 맨몸 요청에 장비 운동) 제외하므로 요청 개수보다 적게 등록될 수 있다.

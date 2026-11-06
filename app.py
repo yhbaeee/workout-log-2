@@ -221,6 +221,10 @@ def add_rec(ex_id):
     flash("rec_top", "success", f"'{all_catalog()[ex_id]['name']}'을(를) 기록하기 목록에 올렸습니다.")
 
 
+def set_extra(text):
+    st.session_state["ai_extra"] = text
+
+
 def remove_rec(ex_id):
     """기록하기 목록에서 운동을 뺀다(저장·기록이 없는 AI 운동은 함께 정리)."""
     ss = st.session_state
@@ -513,6 +517,11 @@ def ai_form():
     equipment = st.selectbox("장비", ai.EQUIPMENT_OPTIONS, key="ai_equipment")
     level = st.radio("난이도", ai.LEVEL_OPTIONS, horizontal=True, key="ai_level")
     count = st.slider("운동 개수", ai.MIN_COUNT, ai.MAX_COUNT, 4, key="ai_count")
+    st.caption("추가 요청 예시 (누르면 아래 입력칸에 채워집니다)")
+    for row in (ai.EXTRA_EXAMPLES[:2], ai.EXTRA_EXAMPLES[2:]):
+        for col, text in zip(st.columns(2), row):
+            col.button(text, key=f"ex_{ai.EXTRA_EXAMPLES.index(text)}", on_click=set_extra, args=(text,),
+                       use_container_width=True)
     extra = st.text_area(f"추가 요청 (선택, {ai.MAX_EXTRA_LEN}자 이내)", max_chars=ai.MAX_EXTRA_LEN,
                          key="ai_extra", placeholder="예: 집에서 할 수 있는 운동 위주로")
     st.caption("이름·회사명 같은 개인정보나 사내 정보는 입력하지 마세요. "
