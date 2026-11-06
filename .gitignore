@@ -7,3 +7,7 @@ __pycache__/
 workout_backup_*.json
 _prev/
 *.docx
+# 환경 변수 파일(API 키)은 저장소에 올리지 않는다 (.env.example만 예외)
+.env
+.env.*
+!.env.example

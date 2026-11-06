@@ -124,6 +124,8 @@ BAD_FILES = {
         {"record_id": "x", "date": "2026-10-27", "exercise_id": EX, "weight_kg": 1, "reps": 1},
         {"record_id": "x", "date": "2026-10-27", "exercise_id": EX, "weight_kg": 1, "reps": 1}]}),
     "non-dict item": json.dumps({"app": ru.APP_NAME, "version": 1, "records": [1]}),
+    "bool version": json.dumps({"app": ru.APP_NAME, "version": True, "records": []}),
+    "custom not list": json.dumps({"app": ru.APP_NAME, "version": 2, "records": [], "custom_exercises": {}}),
 }
 
 
@@ -134,3 +136,122 @@ def test_invalid_restore_keeps_existing_records(name):
     assert err
     assert result is current
     assert result == [rec(rid="keep")] or result[0]["record_id"] == "keep"
+
+
+# ---------- 입력 상한 ----------
+def test_memo_length_limit():
+    assert len(rec(memo="가" * ru.MAX_MEMO_LEN)["memo"]) == ru.MAX_MEMO_LEN
+    with pytest.raises(ru.ValidationError):
+        rec(memo="가" * (ru.MAX_MEMO_LEN + 1))
+
+
+def test_add_records_over_limit_rejected():
+    full = [{"record_id": str(i)} for i in range(ru.MAX_RECORDS)]
+    with pytest.raises(ru.ValidationError):
+        ru.add_records(full, [rec()])
+
+
+# ---------- AI 생성 운동 ----------
+AI_ID = "ai-0123456789ab"
+
+
+def ai_ex(ex_id=AI_ID, name="케틀벨 스윙", part="하체", equipment="덤벨", saved=False, **kw):
+    item = {
+        "id": ex_id, "part": part, "name": name, "equipment": equipment, "level": "초보",
+        "description": "엉덩이를 뒤로 빼며 덤벨을 앞으로 흔들어 올린다.",
+        "weight_basis": ru.WEIGHT_BASIS_BY_EQUIPMENT.get(equipment, ru.WEIGHT_BASES[0]),
+        "search_keyword": f"{name} 자세", "caution": "허리를 둥글게 말지 않는다.", "saved": saved,
+    }
+    item.update(kw)
+    return item
+
+
+def test_ai_exercise_is_recordable_only_with_merged_catalog():
+    custom = ru.add_custom({}, ai_ex(), CATALOG)
+    assert custom[AI_ID]["source"] == "ai" and "video" not in custom[AI_ID]
+    r = ru.make_record("2026-11-06", AI_ID, 10, 12, "", {**CATALOG, **custom})
+    assert r["exercise_id"] == AI_ID
+    with pytest.raises(ru.ValidationError):
+        ru.make_record("2026-11-06", AI_ID, 10, 12, "", CATALOG)
+
+
+def test_add_custom_rejects_same_name_as_base_catalog():
+    with pytest.raises(ru.ValidationError):
+        ru.add_custom({}, ai_ex(name="벤치 프레스", part="가슴", equipment="바벨"), CATALOG)
+
+
+def test_add_custom_save_upgrade_and_saved_limit():
+    custom = ru.add_custom({}, ai_ex(), CATALOG)
+    with pytest.raises(ru.ValidationError):  # 이미 추가됨
+        ru.add_custom(custom, ai_ex(), CATALOG)
+    saved = ru.add_custom(custom, ai_ex(), CATALOG, saved=True)
+    assert saved[AI_ID]["saved"] is True and custom[AI_ID]["saved"] is False  # 원본 불변
+
+    full = {}
+    for i in range(ru.MAX_SAVED_CUSTOM):
+        full = ru.add_custom(full, ai_ex(f"ai-{i:012x}", f"운동{i}"), CATALOG, saved=True)
+    with pytest.raises(ru.ValidationError):
+        ru.add_custom(full, ai_ex("ai-ffffffffffff", "하나 더"), CATALOG, saved=True)
+
+
+@pytest.mark.parametrize("bad", [
+    {"id": "bench_press"}, {"id": "ai-XYZ"}, {"part": "팔"}, {"equipment": "밴드"},
+    {"level": "고급"}, {"weight_basis": "1RM의 70%"}, {"name": ""}, {"name": "가" * 41},
+    {"description": "자세는 https://youtu.be/abc 참고"}, {"search_keyword": "www.youtube.com/watch?v=x"},
+    {"caution": "example.com 참고"}, {"saved": "yes"},
+])
+def test_invalid_ai_exercise_rejected(bad):
+    with pytest.raises(ru.ValidationError):
+        ru.validate_custom_exercise(ai_ex(**bad), PARTS)
+
+
+def test_remove_custom_blocked_while_records_exist():
+    custom = ru.add_custom({}, ai_ex(), CATALOG)
+    records = [ru.make_record("2026-11-06", AI_ID, 10, 12, "", {**CATALOG, **custom})]
+    with pytest.raises(ru.ValidationError):
+        ru.remove_custom(custom, AI_ID, records)
+    assert ru.remove_custom(custom, AI_ID, []) == {}
+    assert AI_ID in custom
+
+
+def test_prune_keeps_saved_or_used_only():
+    custom = ru.add_custom({}, ai_ex("ai-00000000000a", "운동A"), CATALOG)
+    custom = ru.add_custom(custom, ai_ex("ai-00000000000b", "운동B"), CATALOG, saved=True)
+    custom = ru.add_custom(custom, ai_ex("ai-00000000000c", "운동C"), CATALOG)
+    records = [ru.make_record("2026-11-06", "ai-00000000000c", 0, 10, "", {**CATALOG, **custom})]
+    assert set(ru.prune_custom(custom, records)) == {"ai-00000000000b", "ai-00000000000c"}
+
+
+def test_backup_v2_roundtrip_with_ai_exercises():
+    custom = ru.add_custom({}, ai_ex("ai-00000000000a", "운동A"), CATALOG)
+    custom = ru.add_custom(custom, ai_ex("ai-00000000000b", "운동B"), CATALOG, saved=True)
+    custom = ru.add_custom(custom, ai_ex("ai-00000000000c", "운동C"), CATALOG)  # 미저장·미사용 → 제외
+    used = ru.make_record("2026-11-06", "ai-00000000000a", 8, 10, "", {**CATALOG, **custom})
+    records = ru.add_records([], [rec(), used])
+    text = ru.export_json(records, custom=custom)
+    assert json.loads(text)["version"] == 2
+    restored, restored_custom = ru.parse_backup_data(text, CATALOG)
+    assert restored == records
+    assert set(restored_custom) == {"ai-00000000000a", "ai-00000000000b"}
+    assert restored_custom["ai-00000000000b"]["saved"] is True
+
+
+def test_backup_v1_still_restores():
+    text = json.dumps({"app": ru.APP_NAME, "version": 1, "records": [
+        {"record_id": "x", "date": "2026-10-27", "exercise_id": EX, "weight_kg": 1, "reps": 1}]})
+    records, custom = ru.parse_backup_data(text, CATALOG)
+    assert len(records) == 1 and custom == {}
+
+
+@pytest.mark.parametrize("custom_list, ex_id", [
+    ([], AI_ID),                                          # 정의 없는 AI 운동 기록
+    ([ai_ex(description="https://example.com 참고")], AI_ID),  # 링크 포함
+    ([ai_ex(), ai_ex()], AI_ID),                          # 중복 ID
+])
+def test_backup_with_bad_ai_exercises_rejected(custom_list, ex_id):
+    text = json.dumps({"app": ru.APP_NAME, "version": 2, "custom_exercises": custom_list, "records": [
+        {"record_id": "x", "date": "2026-10-27", "exercise_id": ex_id, "weight_kg": 1, "reps": 1}]},
+        ensure_ascii=False)
+    current = [rec(rid="keep")]
+    result, err = ru.try_restore(current, text, CATALOG)
+    assert err and result is current

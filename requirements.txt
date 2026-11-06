@@ -1,1 +1,4 @@
 streamlit>=1.40
+# AI 운동 후보 생성(선택 기능, 로컬 .env 키가 있을 때만 동작). openai 3.46.0에서 확인.
+openai>=3.46,<4
+python-dotenv>=1.0

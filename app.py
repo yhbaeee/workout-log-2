@@ -1,8 +1,11 @@
+import time
 from datetime import date
 from pathlib import Path
 
 import streamlit as st
 
+import ai_client
+import ai_exercises as ai
 import record_utils as ru
 
 BASE = Path(__file__).resolve().parent
@@ -27,6 +30,16 @@ def init_state():
     ss.setdefault("pending_demo", False)
     ss.setdefault("confirm_reset", False)
     ss.setdefault("uploader_n", 0)
+    ss.setdefault("custom_ex", {})       # AI 생성 운동: exercise_id -> 운동 dict (saved: 내 운동 목록 여부)
+    ss.setdefault("ai_candidates", [])   # 가장 최근 생성 결과 (세션 임시)
+    ss.setdefault("ai_request", None)
+    ss.setdefault("ai_generations", 0)
+    ss.setdefault("ai_trace", None)      # 최근 생성 과정: [(성공 여부, 단계, 내용), ...]
+
+
+def all_catalog():
+    """기본 카탈로그 + 이 세션의 AI 생성 운동."""
+    return {**CATALOG, **st.session_state.custom_ex}
 
 
 def new_uid():
@@ -73,6 +86,7 @@ def save_sets(ex_id, day_key):
     if token in ss.saved_nonces:  # 같은 입력창의 중복 저장 방지
         return
     new = []
+    catalog = all_catalog()
     try:
         day = ru.validate_date(ss[day_key])
         for n, uid in enumerate(rows_for(ex_id), start=1):
@@ -84,7 +98,7 @@ def save_sets(ex_id, day_key):
                 raise ru.ValidationError(f"{n}번째 입력 행의 중량과 횟수를 모두 입력해 주세요.")
             memo = ss.get(f"m_{ex_id}_{nonce}_{uid}", "")
             try:
-                new.append(ru.make_record(day, ex_id, w, r, memo, CATALOG))
+                new.append(ru.make_record(day, ex_id, w, r, memo, catalog))
             except ru.ValidationError as e:
                 raise ru.ValidationError(f"{n}번째 입력 행: {e}") from None
         if not new:
@@ -96,7 +110,7 @@ def save_sets(ex_id, day_key):
     ss.saved_nonces.add(token)
     ss.nonce[ex_id] = nonce + 1
     ss.rows[ex_id] = [new_uid() for _ in range(INITIAL_ROWS)]
-    flash(f"rec_{ex_id}", "success", f"{day} {CATALOG[ex_id]['name']} {len(new)}세트를 저장했습니다.")
+    flash(f"rec_{ex_id}", "success", f"{day} {catalog[ex_id]['name']} {len(new)}세트를 저장했습니다.")
 
 
 def save_edit(record_id):
@@ -108,7 +122,7 @@ def save_edit(record_id):
             ss.get(f"ew_{record_id}"),
             ss.get(f"er_{record_id}"),
             ss.get(f"em_{record_id}", ""),
-            CATALOG,
+            all_catalog(),
         )
         flash(f"edit_{record_id}", "success", "수정했습니다.")
     except ru.ValidationError as e:
@@ -133,9 +147,11 @@ def confirm_delete(record_id):
     ss.pending_delete = None
 
 
-def apply_records(new_records, message):
+def apply_records(new_records, message, custom=None):
+    """기록을 교체한다. custom을 주면(복원) AI 운동도 교체, 아니면 저장·사용 중인 것만 남긴다."""
     ss = st.session_state
     ss.records = new_records
+    ss.custom_ex = custom if custom is not None else ru.prune_custom(ss.custom_ex, new_records)
     ss.pending_restore = None
     ss.pending_demo = False
     ss.pending_delete = None
@@ -161,7 +177,8 @@ def cancel_demo():
 def do_restore():
     ss = st.session_state
     if ss.pending_restore is not None:
-        apply_records(ss.pending_restore, "백업 파일로 기록을 복원했습니다.")
+        records, custom = ss.pending_restore
+        apply_records(records, "백업 파일로 기록을 복원했습니다.", custom)
         ss.uploader_n += 1
 
 
@@ -175,7 +192,91 @@ def do_reset():
     st.session_state.confirm_reset = False
 
 
+def add_ai(ex_id, saved):
+    """AI 후보를 기록하기 탭에 추가(saved=False)하거나 내 운동 목록에 저장(saved=True)."""
+    ss = st.session_state
+    ex = ss.custom_ex.get(ex_id) or next((c for c in ss.ai_candidates if c["id"] == ex_id), None)
+    if ex is None:
+        flash("ai", "error", "운동을 찾을 수 없습니다. 다시 생성해 주세요.")
+        return
+    try:
+        ss.custom_ex = ru.add_custom(ss.custom_ex, ex, CATALOG, saved)
+    except ru.ValidationError as e:
+        flash("ai", "error", str(e))
+        return
+    where = "내 운동 목록에 저장했습니다" if saved else "기록하기 탭에 추가했습니다"
+    flash("ai", "success", f"'{ex['name']}'을(를) {where}. '기록하기' 탭의 {ex['part']} 부위에서 기록할 수 있습니다.")
+
+
+def remove_ai(ex_id):
+    ss = st.session_state
+    try:
+        name = ss.custom_ex[ex_id]["name"] if ex_id in ss.custom_ex else ""
+        ss.custom_ex = ru.remove_custom(ss.custom_ex, ex_id, ss.records)
+        flash("ai", "success", f"'{name}'을(를) 목록에서 삭제했습니다.")
+    except ru.ValidationError as e:
+        flash("ai", "error", str(e))
+
+
+TRACE_STEPS = ("요청 조건 확인", "보낼 정보 구성", "AI 호출", "응답 검증")
+
+
+def run_generation(part, equipment, level, count, extra, progress=lambda msg: None):
+    """AI 후보 생성. 저장하지 않았고 기록도 없는 이전 AI 운동은 정리한다.
+
+    단계별 진행 내역을 ai_trace에 남긴다(조건 요약·모델명·응답 시간·검증 통계만, 키·전체 프롬프트 제외).
+    progress는 생성 중 화면에 단계를 바로 보여 주는 함수.
+    """
+    ss = st.session_state
+    steps = []
+
+    def step(title, detail, ok=True):
+        steps.append((ok, title, detail))
+        progress(f"{'✅' if ok else '❌'} **{title}** — {detail}")
+
+    try:
+        req = ai.validate_request(part, equipment, level, count, extra, PARTS)
+        step(TRACE_STEPS[0], f"{req['part']} · 장비 {req['equipment']} · 난이도 {req['level']} · "
+                             f"{req['count']}개 · 추가 요청 {'있음' if req['extra'] else '없음'}")
+        custom = ru.prune_custom(ss.custom_ex, ss.records)
+        known = {**CATALOG, **custom}
+        exclude = [e["name"] for e in ru.exercises_by_part(known, req["part"])]
+        instructions, user_input = ai.build_prompt(req, exclude)
+        step(TRACE_STEPS[1], f"요청 조건 + {req['part']} 부위 기존 운동명 {len(exclude)}개(중복 방지). "
+                             "기록·중량·메모·개인정보는 보내지 않음")
+        _, model = ai_client.load_settings()
+        progress(f"⏳ **{TRACE_STEPS[2]}** — {model} 응답 대기 중")
+        ss.ai_generations += 1
+        started = time.perf_counter()
+        text = ai_client.generate_json(instructions, user_input, ai.response_schema(req))
+        step(TRACE_STEPS[2], f"{model} · JSON 스키마 형식 응답 · {time.perf_counter() - started:.1f}초")
+        candidates, stats = ai.parse_response(text, req, known)
+        step(TRACE_STEPS[3], ai.describe_stats(stats))
+    except (ru.ValidationError, ai_client.AIError) as e:
+        step(TRACE_STEPS[len(steps)], str(e), ok=False)
+        ss.ai_trace = steps
+        flash("ai", "error", str(e))
+        return
+    step("결과", f"후보 {len(candidates)}개를 아래에 표시")
+    ss.ai_trace = steps
+    ss.custom_ex = custom
+    ss.ai_candidates = candidates
+    ss.ai_request = req
+    flash("ai", "success", f"운동 후보 {len(candidates)}개를 만들었습니다.")
+
+
 # ---------- 화면 조각 ----------
+def ai_info(ex):
+    """AI 생성 운동 설명. 검증된 영상이 없으므로 링크 없이 검색 키워드만 보여 준다."""
+    st.markdown(f"`AI 생성` {ex['part']} · {ex['equipment']} · {ex['level']}")
+    st.write(ex["description"])
+    st.caption(f"중량 입력 기준: {ex['weight_basis']}")
+    if ex["caution"]:
+        st.caption(f"일반 주의사항: {ex['caution']}")
+    st.caption("유튜브 검색 키워드 (링크 미제공)")
+    st.code(ex["search_keyword"], language=None)
+
+
 def video_block(ex):
     v = ex.get("video")
     if not v or not v.get("url"):
@@ -214,9 +315,14 @@ def input_rows(ex):
 
 def exercise_card(ex, day_key):
     ex_id = ex["id"]
-    with st.expander(f"{ex['name']} · {ex['equipment']}"):
-        st.caption(f"중량 입력 기준: {ex['weight_basis']}")
-        video_block(ex)
+    custom = ru.is_custom(ex)
+    label = f"[AI 생성] {ex['name']} · {ex['equipment']}" if custom else f"{ex['name']} · {ex['equipment']}"
+    with st.expander(label):
+        if custom:
+            ai_info(ex)
+        else:
+            st.caption(f"중량 입력 기준: {ex['weight_basis']}")
+            video_block(ex)
         st.divider()
         show_flash(f"rec_{ex_id}")
         input_rows(ex)
@@ -232,6 +338,12 @@ def tab_record():
     st.caption("운동을 열어 세트별 중량과 반복 횟수를 입력하세요. 칸은 비어 있는 상태로 시작합니다.")
     for ex in ru.exercises_by_part(CATALOG, part):
         exercise_card(ex, "record_day")
+    customs = ru.exercises_by_part(st.session_state.custom_ex, part)
+    if customs:
+        st.subheader(f"{part} AI 생성 운동")
+        st.caption("'AI 운동 후보' 탭에서 추가한 운동입니다. 검증된 기본 운동 목록과 별개이며 자세 영상은 제공하지 않습니다.")
+        for ex in customs:
+            exercise_card(ex, "record_day")
 
 
 def tab_view():
@@ -241,9 +353,11 @@ def tab_view():
     if not day_records:
         st.info("이 날짜에 저장된 기록이 없습니다.")
         return
+    catalog = all_catalog()
     for ex_id, sets in ru.group_by_exercise(day_records).items():
-        ex = CATALOG[ex_id]
-        st.markdown(f"#### {ex['name']}  \n{ex['part']} · {ex['equipment']} · 총 {len(sets)}세트")
+        ex = catalog[ex_id]
+        tag = " `AI 생성`" if ru.is_custom(ex) else ""
+        st.markdown(f"#### {ex['name']}{tag}  \n{ex['part']} · {ex['equipment']} · 총 {len(sets)}세트")
         for n, r in enumerate(sets, start=1):
             rid = r["record_id"]
             memo = f" · {r['memo']}" if r["memo"] else ""
@@ -272,13 +386,15 @@ def tab_backup():
         st.warning("현재 기록에 가상 데모 데이터가 포함되어 있습니다. 실제 기록이 아닙니다.")
 
     st.markdown("#### 백업 내려받기")
-    st.caption(f"현재 기록 {len(ss.records)}세트")
-    st.download_button("JSON 백업 다운로드", data=ru.export_json(ss.records),
+    n_custom = len(ru.prune_custom(ss.custom_ex, ss.records))
+    st.caption(f"현재 기록 {len(ss.records)}세트"
+               + (f" · AI 생성 운동 {n_custom}개 정의 포함(내 운동 목록·기록에 쓰인 것)" if n_custom else ""))
+    st.download_button("JSON 백업 다운로드", data=ru.export_json(ss.records, custom=ss.custom_ex),
                        file_name=f"workout_backup_{date.today().isoformat()}.json",
                        mime="application/json")
 
     st.markdown("#### 백업에서 복원")
-    st.caption("복원하면 현재 기록이 모두 백업 파일의 기록으로 교체됩니다.")
+    st.caption("복원하면 현재 기록과 추가한 AI 운동이 모두 백업 파일의 내용으로 교체됩니다.")
     up = st.file_uploader("백업 JSON 파일 (5MB 이하)", type=["json"], key=f"uploader_{ss.uploader_n}")
     if up is not None and ss.pending_restore is None:
         if up.size > 5_000_000:
@@ -288,18 +404,23 @@ def tab_backup():
                 text = up.getvalue().decode("utf-8")
             except UnicodeDecodeError:
                 text = ""
-            records, err = ru.try_restore(ss.records, text, CATALOG)
-            if err:
-                st.error(f"복원할 수 없습니다. 기존 기록은 그대로 유지됩니다. ({err})")
-            elif ss.records:
-                ss.pending_restore = records
-                st.rerun()
+            try:
+                records, custom = ru.parse_backup_data(text, CATALOG)
+            except ru.ValidationError as e:
+                st.error(f"복원할 수 없습니다. 기존 기록은 그대로 유지됩니다. ({e})")
             else:
-                apply_records(records, "백업 파일로 기록을 복원했습니다.")
-                ss.uploader_n += 1
-                st.rerun()
+                if ss.records or ss.custom_ex:
+                    ss.pending_restore = (records, custom)
+                    st.rerun()
+                else:
+                    apply_records(records, "백업 파일로 기록을 복원했습니다.", custom)
+                    ss.uploader_n += 1
+                    st.rerun()
     if ss.pending_restore is not None:
-        st.warning(f"기존 {len(ss.records)}세트를 백업의 {len(ss.pending_restore)}세트로 교체할까요?")
+        new_records, new_custom = ss.pending_restore
+        extra = f"(AI 생성 운동 {len(new_custom)}개 포함)" if new_custom else ""
+        st.warning(f"기존 {len(ss.records)}세트와 추가한 AI 운동 {len(ss.custom_ex)}개를 "
+                   f"백업의 {len(new_records)}세트{extra}로 교체할까요?")
         c1, c2 = st.columns(2)
         c1.button("교체 확인", type="primary", on_click=do_restore)
         c2.button("취소", key="cancel_restore", on_click=cancel_restore)
@@ -318,18 +439,112 @@ def tab_backup():
     st.button("전체 초기화", disabled=not (ss.confirm_reset and ss.records), on_click=do_reset)
 
 
+def ai_form():
+    ss = st.session_state
+    part = st.radio("부위", PARTS, horizontal=True, key="ai_part")
+    equipment = st.selectbox("장비", ai.EQUIPMENT_OPTIONS, key="ai_equipment")
+    level = st.radio("난이도", ai.LEVEL_OPTIONS, horizontal=True, key="ai_level")
+    count = st.slider("운동 개수", ai.MIN_COUNT, ai.MAX_COUNT, 4, key="ai_count")
+    extra = st.text_area(f"추가 요청 (선택, {ai.MAX_EXTRA_LEN}자 이내)", max_chars=ai.MAX_EXTRA_LEN,
+                         key="ai_extra", placeholder="예: 집에서 할 수 있는 운동 위주로")
+    st.caption("이름·회사명 같은 개인정보나 사내 정보는 입력하지 마세요. "
+               "AI에는 위 조건만 보내며, 저장한 기록·중량·메모는 보내지 않습니다.")
+    if ai.mentions_medical(extra):
+        st.info("의료·부상·통증 관련 내용이 있어 일반적인 운동 정보로만 답하도록 요청합니다. "
+                "통증이나 부상이 있다면 전문가와 상담하세요.")
+    left = max(ai.MAX_GENERATIONS_PER_SESSION - ss.ai_generations, 0)
+    if st.button("AI 운동 후보 생성", type="primary", disabled=left == 0):
+        with st.status("AI 운동 후보를 만드는 중입니다…", expanded=True) as box:
+            run_generation(part, equipment, level, count, extra, progress=box.markdown)
+        st.rerun()
+    _, model = ai_client.load_settings()
+    st.caption(f"이번 세션에서 남은 생성 횟수 {left}회 · 모델 {model}")
+
+
+def ai_trace_section():
+    trace = st.session_state.ai_trace
+    if not trace:
+        return
+    ok = all(done for done, _, _ in trace)
+    label = "최근 생성 과정 · 완료" if ok else "최근 생성 과정 · 중단"
+    with st.status(label, state="complete" if ok else "error", expanded=True):
+        for n, (done, title, detail) in enumerate(trace, start=1):
+            st.markdown(f"{'✅' if done else '❌'} **{n}. {title}**  \n{detail}")
+
+
+def ai_candidates_section():
+    ss = st.session_state
+    if not ss.ai_candidates:
+        return
+    req = ss.ai_request
+    st.markdown(f"#### AI 생성 운동 후보 · {req['part']} · {req['equipment']} · {req['level']}")
+    st.caption("기록하려면 '기록하기 탭에 추가'를, 다음 생성 후에도 계속 쓰려면 '내 운동 목록에 저장'을 누르세요. "
+               "AI가 만든 영상 링크는 검증할 수 없어 표시하지 않고, 유튜브 검색 키워드만 제공합니다.")
+    for ex in ss.ai_candidates:
+        added = ss.custom_ex.get(ex["id"])
+        with st.container(border=True):
+            st.markdown(f"**{ex['name']}**")
+            ai_info(ex)
+            c1, c2 = st.columns(2)
+            if added:
+                c1.caption("✔ 기록하기 탭에 추가됨")
+            else:
+                c1.button("기록하기 탭에 추가", key=f"aiadd_{ex['id']}", on_click=add_ai, args=(ex["id"], False))
+            if added and added["saved"]:
+                c2.caption("✔ 내 운동 목록에 저장됨")
+            else:
+                c2.button("내 운동 목록에 저장", key=f"aisave_{ex['id']}", on_click=add_ai, args=(ex["id"], True))
+
+
+def my_ai_section():
+    ss = st.session_state
+    st.markdown("#### 추가한 AI 운동")
+    if not ss.custom_ex:
+        st.caption("아직 추가한 AI 운동이 없습니다.")
+        return
+    saved = sum(1 for e in ss.custom_ex.values() if e["saved"])
+    st.caption(f"내 운동 목록 {saved}/{ru.MAX_SAVED_CUSTOM}개 · 새로 생성하면 저장하지 않았고 기록도 없는 운동은 "
+               "목록에서 빠집니다. 기록이 남아 있는 운동은 삭제할 수 없고, 기본 운동은 여기에 나오지 않습니다.")
+    for ex in ss.custom_ex.values():
+        n = ru.count_records_for(ss.records, ex["id"])
+        status = "내 운동 목록" if ex["saved"] else "이번 세션만"
+        with st.container(border=True):
+            st.markdown(f"**{ex['name']}** · {ex['part']} · {ex['equipment']}  \n"
+                        f"`AI 생성` {status} · 기록 {n}세트")
+            cols = iter(st.columns(2))
+            if not ex["saved"]:
+                next(cols).button("내 운동 목록에 저장", key=f"mysave_{ex['id']}", on_click=add_ai, args=(ex["id"], True))
+            next(cols).button("목록에서 삭제", key=f"mydel_{ex['id']}", on_click=remove_ai, args=(ex["id"],))
+
+
+def tab_ai():
+    st.subheader("AI 운동 후보 생성")
+    st.warning(ai.NOTICE)
+    show_flash("ai")
+    reason = ai_client.unavailable_reason()
+    if reason:
+        st.info(f"AI 운동 생성 기능 사용 불가: {reason} 운동 기록·조회·백업 기능은 그대로 사용할 수 있습니다.")
+    else:
+        ai_form()
+        ai_trace_section()
+        ai_candidates_section()
+    my_ai_section()
+
+
 def main():
     init_state()
     st.title("🏋️ 오늘의 운동기록")
     st.caption("날짜와 부위를 고르고, 기본 운동 후보의 자세 영상을 참고하며 세트별 중량과 횟수를 기록하세요.")
     st.info("기록은 현재 세션에서 관리됩니다. 세션이 종료되거나 초기화되면 사라질 수 있으므로 "
             "사용 후 JSON 백업 파일을 저장해 주세요.")
-    t1, t2, t3 = st.tabs(["기록하기", "기록 보기", "백업·복원"])
+    t1, t2, t3, t4 = st.tabs(["기록하기", "기록 보기", "AI 운동 후보", "백업·복원"])
     with t1:
         tab_record()
     with t2:
         tab_view()
     with t3:
+        tab_ai()
+    with t4:
         tab_backup()
     st.divider()
     st.caption("참고 영상과 운동 목록은 일반적인 정보입니다. 개인 상태에 따른 운동 처방을 제공하지 않습니다.")
