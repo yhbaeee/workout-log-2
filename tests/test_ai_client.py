@@ -165,3 +165,103 @@ def test_unusable_responses_rejected(env_file, resp):
     _, factory = fake_factory(resp)
     with pytest.raises(ai_client.AIError):
         ai_client.generate_json("i", "u", {}, env_path=env_file, client_factory=factory)
+
+
+# ---------- 운동 방법 이미지 ----------
+import base64  # noqa: E402
+import io  # noqa: E402
+
+Image = pytest.importorskip("PIL.Image")
+
+
+def _img(fmt):
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 10, 10)).save(buf, fmt)
+    return buf.getvalue()
+
+
+PNG = _img("PNG")
+CORRUPT_PNG = b"\x89PNG\r\n\x1a\n" + b"0" * 32  # 형식(매직 바이트)만 맞고 열리지 않는 이미지
+
+
+def image_response(raw=PNG):
+    return types.SimpleNamespace(data=[types.SimpleNamespace(b64_json=base64.b64encode(raw).decode())])
+
+
+class FakeImageClient:
+    def __init__(self, result):
+        self.result = result
+        self.init_kwargs = None
+        self.kwargs = None
+        self.images = self
+
+    def generate(self, **kwargs):
+        self.kwargs = kwargs
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def image_factory(result):
+    client = FakeImageClient(result)
+
+    def factory(**kwargs):
+        client.init_kwargs = kwargs
+        return client
+    return client, factory
+
+
+def test_generate_image_returns_bytes_and_sends_expected_request(env_file):
+    client, factory = image_factory(image_response())
+    assert ai_client.generate_image("draw a squat", env_path=env_file, client_factory=factory) == PNG
+    assert client.init_kwargs == {"api_key": FAKE_KEY, "timeout": ai_client.IMAGE_TIMEOUT_SEC,
+                                  "max_retries": ai_client.MAX_RETRIES}
+    assert client.kwargs == {"model": ai_client.DEFAULT_IMAGE_MODEL, "prompt": "draw a squat", "n": 1,
+                             "size": ai_client.IMAGE_SIZE, "quality": ai_client.IMAGE_QUALITY}
+
+
+def test_image_model_override_order(tmp_path, monkeypatch):
+    assert ai_client.load_image_model(tmp_path / "no.env") == ai_client.DEFAULT_IMAGE_MODEL
+    monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-1-mini")
+    assert ai_client.load_image_model(tmp_path / "no.env") == "gpt-image-1-mini"
+    p = tmp_path / ".env"
+    p.write_text("OPENAI_IMAGE_MODEL=gpt-image-2.5-flare\n", encoding="utf-8")
+    assert ai_client.load_image_model(p) == "gpt-image-2.5-flare"
+
+
+def test_generate_image_without_key_does_not_call(tmp_path):
+    client, factory = image_factory(image_response())
+    with pytest.raises(ai_client.AIError):
+        ai_client.generate_image("x", env_path=tmp_path / "no.env", client_factory=factory)
+    assert client.init_kwargs is None
+
+
+@pytest.mark.parametrize("cls, status, expected", [
+    ("AuthenticationError", None, "인증"), ("RateLimitError", None, "한도"), ("APITimeoutError", None, "시간이 초과"),
+    ("BadRequestError", None, "거부"), ("InternalServerError", 500, "서버"),
+])
+def test_image_errors_mapped_without_leaking(env_file, cls, status, expected):
+    _, factory = image_factory(make_error(getattr(openai, cls), status))
+    with pytest.raises(ai_client.AIError) as info:
+        ai_client.generate_image("secret prompt", env_path=env_file, client_factory=factory)
+    msg = str(info.value)
+    assert expected in msg and FAKE_KEY not in msg and "secret prompt" not in msg
+    assert info.value.__cause__ is None and info.value.__suppress_context__
+
+
+@pytest.mark.parametrize("resp", [
+    types.SimpleNamespace(data=[]), types.SimpleNamespace(data=[types.SimpleNamespace(b64_json=None)]),
+    types.SimpleNamespace(data=[types.SimpleNamespace(b64_json="not base64!!")]),
+    image_response(b"<html>not an image</html>"), image_response(b""), image_response(CORRUPT_PNG),
+    image_response(b"\x89PNG\r\n\x1a\n" + b"0" * (ai_client.MAX_IMAGE_BYTES + 1)),
+])
+def test_unusable_image_responses_rejected(env_file, resp):
+    _, factory = image_factory(resp)
+    with pytest.raises(ai_client.AIError):
+        ai_client.generate_image("x", env_path=env_file, client_factory=factory)
+
+
+@pytest.mark.parametrize("raw", [_img("JPEG"), _img("WEBP")])
+def test_jpeg_and_webp_accepted(env_file, raw):
+    _, factory = image_factory(image_response(raw))
+    assert ai_client.generate_image("x", env_path=env_file, client_factory=factory) == raw

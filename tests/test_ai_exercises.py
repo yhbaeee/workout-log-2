@@ -311,3 +311,13 @@ def test_summarize_and_describe_plans():
     assert ai.summarize_plans([a, b]) == {"exercises": 2, "sets": 7, "minutes": 12}  # (3*105 + 4*90)=675초 → 11.25분 올림
     assert ai.describe_plan(a) == "3세트 × 10회 · 시작 중량 12.5kg · 세트 사이 휴식 60초"
     assert ai.summarize_plans([]) == {"exercises": 0, "sets": 0, "minutes": 0}
+
+
+def test_image_prompt_uses_exercise_facts_without_links_or_text_requests():
+    ex = {"name": "글루트 브리지", "equipment": "맨몸", "part": "하체",
+          "description": "바닥에 누워 엉덩이를 들어 올립니다. https://youtu.be/abc 참고"}
+    prompt = ai.build_image_prompt(ex)
+    assert "글루트 브리지" in prompt and "맨몸" in prompt and "하체" in prompt and "엉덩이를 들어 올립니다" in prompt
+    assert not ru.URL_RE.search(prompt) and "youtu" not in prompt
+    assert "Do not include any text" in prompt and "starting and ending positions" in prompt
+    assert ai.MAX_IMAGES_PER_SESSION == 5

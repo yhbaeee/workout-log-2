@@ -18,6 +18,7 @@ LEVEL_OPTIONS = (ANY,) + ru.LEVELS
 MIN_COUNT, MAX_COUNT = 3, 6
 MAX_EXTRA_LEN = 300
 MAX_GENERATIONS_PER_SESSION = 10
+MAX_IMAGES_PER_SESSION = 5     # 운동 방법 이미지 생성 횟수(세션당)
 
 # 신체 정보(선택): 키·몸무게·목표 몸무게. 모두 입력했을 때만 권장 세트·횟수·시작 중량을 받는다.
 BODY_MIN_HEIGHT, BODY_MAX_HEIGHT = 100, 250
@@ -306,6 +307,18 @@ def summarize_plans(plans):
     sets = sum(p["sets"] for p in plans)
     seconds = sum(p["sets"] * (PLAN_SET_SEC + p["rest_sec"]) for p in plans)
     return {"exercises": len(plans), "sets": sets, "minutes": math.ceil(seconds / 60)}
+
+
+def build_image_prompt(ex):
+    """운동 방법 참고 이미지 프롬프트(영어, 글자 없는 일러스트). 운동명·장비·부위·설명만 사용하고 링크는 제거한다."""
+    return (
+        "A single clean instructional illustration of one person performing the exercise "
+        f"'{_plain(ex['name'])}' ({ex['equipment']}, target area: {ex['part']}). "
+        f"Movement description: {_plain(ex.get('description'))} "
+        "Show the correct starting and ending positions together in one image. Flat vector style, light plain background, "
+        "full body visible from a clear side or three-quarter angle, safe neutral form. "
+        "Do not include any text, letters, numbers, captions, labels, logos, or watermarks."
+    )
 
 
 def hanjobody_search_url(keyword):

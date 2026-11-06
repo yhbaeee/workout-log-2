@@ -36,6 +36,8 @@ def init_state():
     ss.setdefault("ai_request", None)    # 가장 최근 추천 조건
     ss.setdefault("ai_generations", 0)
     ss.setdefault("ai_trace", None)      # 최근 생성 과정: [(성공 여부, 단계, 내용), ...]
+    ss.setdefault("images", {})          # AI 운동 exercise_id -> 생성 이미지 바이트(세션 한정, 백업 제외)
+    ss.setdefault("image_count", 0)
     ss.setdefault("rec_plan", {})        # exercise_id -> 권장 세트·횟수·시작 중량(신체 정보를 입력했을 때만, 세션 한정)
     ss.setdefault("goto_tab", None)      # 다음 실행에서 열 탭
     ss.setdefault("view_day", date.today())
@@ -328,6 +330,27 @@ def ai_info(ex):
     st.link_button("한조바디 채널에서 검색", ai.hanjobody_search_url(ex["search_keyword"]))
 
 
+def image_block(ex):
+    """영상이 없는 AI 운동용 운동 방법 이미지(버튼을 눌렀을 때만 1장 생성)."""
+    ss = st.session_state
+    ex_id = ex["id"]
+    if ex_id in ss.images:
+        st.image(ss.images[ex_id], caption="AI가 그린 운동 방법 참고 이미지입니다(영상 아님). 자세가 정확하지 않을 수 있으니 참고만 하세요.")
+        return
+    if ai_client.unavailable_reason():
+        return
+    left = max(ai.MAX_IMAGES_PER_SESSION - ss.image_count, 0)
+    st.caption(f"확인된 영상이 없어 AI가 운동 방법 이미지를 1장 그려 줄 수 있습니다(약 20~60초, 이번 세션 {left}회 남음).")
+    if st.button("운동 방법 이미지 만들기", key=f"img_{ex_id}", disabled=left == 0):
+        with st.spinner("이미지를 만드는 중입니다…"):
+            try:
+                ss.images[ex_id] = ai_client.generate_image(ai.build_image_prompt(ex))
+                ss.image_count += 1
+            except ai_client.AIError as e:
+                flash(f"rec_{ex_id}", "error", str(e))
+        st.rerun()
+
+
 def video_block(ex):
     v = ex.get("video")
     if not v or not v.get("url"):
@@ -377,6 +400,7 @@ def exercise_card(ex, day_key, recommended=False):
     with st.expander(label):
         if custom:
             ai_info(ex)
+            image_block(ex)
         else:
             st.caption(f"중량 입력 기준: {ex['weight_basis']}")
             video_block(ex)
