@@ -217,3 +217,97 @@ def test_extra_examples_are_valid_requests():
     for text in ai.EXTRA_EXAMPLES:
         assert not ai.mentions_medical(text) and not ru.URL_RE.search(text)
         assert req(extra=text)["extra"] == text
+
+
+# ---------- 신체 정보·권장 운동량 ----------
+def body(**kw):
+    base = dict(height=170, weight=72, goal=68)
+    base.update(kw)
+    return ai.validate_body(base["height"], base["weight"], base["goal"])
+
+
+def test_body_all_empty_is_none_and_partial_rejected():
+    assert ai.validate_body(None, None, None) is None
+    for args in ((170, None, None), (None, 72, 68), (170, 72, None)):
+        with pytest.raises(ru.ValidationError):
+            ai.validate_body(*args)
+
+
+def test_body_valid_directions():
+    assert body()["direction"] == "감량" and body(goal=75)["direction"] == "증량" and body(goal=72.3)["direction"] == "유지"
+    assert ai.describe_body(body()) == "키 170cm · 현재 72kg → 목표 68kg(감량)"
+
+
+@pytest.mark.parametrize("kw", [
+    dict(height=99), dict(height=251), dict(weight=29), dict(weight=301), dict(goal=29),
+    dict(height="170"), dict(weight=True), dict(goal=float("nan")), dict(height=float("inf")),
+    dict(weight=100, goal=50),            # 차이 40kg 초과
+    dict(height=180, weight=60, goal=55),  # 키 대비 너무 낮은 목표(BMI 17.0)
+])
+def test_body_invalid_rejected(kw):
+    with pytest.raises(ru.ValidationError):
+        body(**kw)
+
+
+def test_prompt_with_body_allows_plan_numbers_only_in_plan():
+    r = req()
+    r["body"] = body()
+    instructions, user_input = ai.build_prompt(r, ["덤벨 프레스"])
+    assert "plan 필드에만" in instructions and "10. " in instructions and "칼로리·식단" in instructions
+    assert "신체 정보(참고용): 키 170cm, 현재 몸무게 72kg, 목표 몸무게 68kg(감량)" in user_input
+    plain, plain_input = ai.build_prompt(req())
+    assert "plan" not in plain and "신체 정보" not in plain_input and "개인 맞춤 처방" in plain
+
+
+def test_schema_has_plan_only_with_body():
+    assert "plan" not in ai.response_schema(req())["properties"]["exercises"]["items"]["properties"]
+    r = req()
+    r["body"] = body()
+    item_schema = ai.response_schema(r)["properties"]["exercises"]["items"]
+    assert "plan" in item_schema["required"] and set(item_schema["required"]) == set(item_schema["properties"])
+    assert set(item_schema["properties"]["plan"]["required"]) == {"sets", "reps", "start_weight_kg", "rest_sec"}
+
+
+@pytest.mark.parametrize("plan, ok", [
+    ({"sets": 3, "reps": 10, "start_weight_kg": 12.3, "rest_sec": 60}, True),
+    ({"sets": 3.0, "reps": 10, "start_weight_kg": 0, "rest_sec": 60}, True),
+    ({"sets": 0, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}, False),
+    ({"sets": 7, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 31, "start_weight_kg": 10, "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 10, "start_weight_kg": 201, "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 10, "start_weight_kg": -1, "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 10, "start_weight_kg": 10, "rest_sec": 5}, False),
+    ({"sets": 2.5, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}, False),
+    ({"sets": True, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 10, "start_weight_kg": float("nan"), "rest_sec": 60}, False),
+    ({"sets": 3, "reps": 10, "start_weight_kg": 10}, False), (None, False), ("3x10", False),
+])
+def test_clean_plan(plan, ok):
+    cleaned = ai.clean_plan(plan)
+    assert (cleaned is not None) == ok
+    if ok:
+        assert cleaned["start_weight_kg"] % 0.5 == 0 and cleaned["sets"] == int(plan["sets"])
+
+
+def test_parse_collects_plans_for_base_new_and_drops_bad_ones():
+    plans = {}
+    good = {"sets": 3, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}
+    ids, new, stats = ai.parse_response(response(
+        item("덤벨 프레스", plan=good),
+        item("덤벨 풀오버", plan={"sets": 99, "reps": 10, "start_weight_kg": 10, "rest_sec": 60}),
+        item("덤벨 스퀴즈 프레스", plan=good),
+    ), req(), CATALOG, plans_out=plans)
+    assert ids[0] == "db_press" and plans["db_press"]["sets"] == 3
+    assert ids[2] in plans and ids[1] not in plans and stats["plan_dropped"] == 1
+    assert "형식 오류 권장량 제외 1" in ai.describe_stats(stats)
+    # plans_out을 주지 않으면 plan이 있어도 무시한다
+    _, _, stats2 = ai.parse_response(response(item("덤벨 풀오버", plan=good)), req(), CATALOG)
+    assert stats2["plan_dropped"] == 0
+
+
+def test_summarize_and_describe_plans():
+    a = {"sets": 3, "reps": 10, "start_weight_kg": 12.5, "rest_sec": 60}
+    b = {"sets": 4, "reps": 12, "start_weight_kg": 0, "rest_sec": 45}
+    assert ai.summarize_plans([a, b]) == {"exercises": 2, "sets": 7, "minutes": 12}  # (3*105 + 4*90)=675초 → 11.25분 올림
+    assert ai.describe_plan(a) == "3세트 × 10회 · 시작 중량 12.5kg · 세트 사이 휴식 60초"
+    assert ai.summarize_plans([]) == {"exercises": 0, "sets": 0, "minutes": 0}

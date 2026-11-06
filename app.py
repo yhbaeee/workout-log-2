@@ -36,6 +36,7 @@ def init_state():
     ss.setdefault("ai_request", None)    # 가장 최근 추천 조건
     ss.setdefault("ai_generations", 0)
     ss.setdefault("ai_trace", None)      # 최근 생성 과정: [(성공 여부, 단계, 내용), ...]
+    ss.setdefault("rec_plan", {})        # exercise_id -> 권장 세트·횟수·시작 중량(신체 정보를 입력했을 때만, 세션 한정)
     ss.setdefault("goto_tab", None)      # 다음 실행에서 열 탭
     ss.setdefault("view_day", date.today())
     if "main_tab" not in ss:             # AI를 못 쓰면 처음부터 기록하기 탭
@@ -260,7 +261,8 @@ def remove_ai(ex_id):
 TRACE_STEPS = ("요청 조건 확인", "보낼 정보 구성", "AI 호출", "응답 검증")
 
 
-def run_generation(part, equipment, level, count, extra, progress=lambda msg: None):
+def run_generation(part, equipment, level, count, extra, height=None, weight=None, goal=None,
+                   progress=lambda msg: None):
     """AI 운동 추천 → 기록하기 목록 등록 → 기록하기 탭으로 이동.
 
     단계별 진행 내역을 ai_trace에 남긴다(조건 요약·모델명·응답 시간·검증 통계만, 키·전체 프롬프트 제외).
@@ -274,22 +276,25 @@ def run_generation(part, equipment, level, count, extra, progress=lambda msg: No
         progress(f"{'✅' if ok else '❌'} **{title}** — {detail}")
 
     try:
-        req = ai.validate_request(part, equipment, level, count, extra, PARTS)
+        body = ai.validate_body(height, weight, goal)
+        req = ai.validate_request(part, equipment, level, count, extra, PARTS, body)
         step(TRACE_STEPS[0], f"{req['part']} · 장비 {req['equipment']} · 난이도 {req['level']} · "
-                             f"{req['count']}개 · 추가 요청 {'있음' if req['extra'] else '없음'}")
+                             f"{req['count']}개 · 추가 요청 {'있음' if req['extra'] else '없음'} · "
+                             f"신체 정보 {ai.describe_body(body) if body else '없음'}")
         custom = ru.prune_custom(ss.custom_ex, ss.records)
         known = {**CATALOG, **custom}
         names = [e["name"] for e in ru.exercises_by_part(known, req["part"])]
         instructions, user_input = ai.build_prompt(req, names)
-        step(TRACE_STEPS[1], f"요청 조건 + {req['part']} 부위 활용 가능 운동명 {len(names)}개(중복 방지·영상 연결). "
-                             "기록·중량·메모·개인정보는 보내지 않음")
+        step(TRACE_STEPS[1], f"요청 조건{' + 신체 정보(키·몸무게·목표)' if body else ''} + {req['part']} 부위 "
+                             f"활용 가능 운동명 {len(names)}개(중복 방지·영상 연결). 저장된 기록·중량·메모·이름은 보내지 않음")
         _, model = ai_client.load_settings()
         progress(f"⏳ **{TRACE_STEPS[2]}** — {model} 응답 대기 중")
         ss.ai_generations += 1
         started = time.perf_counter()
         text = ai_client.generate_json(instructions, user_input, ai.response_schema(req))
         step(TRACE_STEPS[2], f"{model} · JSON 스키마 형식 응답 · {time.perf_counter() - started:.1f}초")
-        ids, new, stats = ai.parse_response(text, req, CATALOG, custom)
+        plans = {}
+        ids, new, stats = ai.parse_response(text, req, CATALOG, custom, plans_out=plans if body else None)
         step(TRACE_STEPS[3], ai.describe_stats(stats))
     except (ru.ValidationError, ai_client.AIError) as e:
         step(TRACE_STEPS[min(len(steps), len(TRACE_STEPS) - 1)], str(e), ok=False)
@@ -298,10 +303,12 @@ def run_generation(part, equipment, level, count, extra, progress=lambda msg: No
         return False
     merged = {**CATALOG, **custom, **new}
     listing = ", ".join(f"{merged[i]['name']}({'AI' if ru.is_custom(merged[i]) else '기본'})" for i in ids)
-    step("결과", f"기록하기에 {len(ids)}개 등록: {listing}")
+    step("결과", f"기록하기에 {len(ids)}개 등록: {listing}"
+                 + (f" · 권장 운동량 {len(plans)}개" if body else ""))
     ss.ai_trace = steps
     ss.custom_ex = {**custom, **new}
     ss.rec_ids = ids
+    ss.rec_plan = plans
     ss.ai_request = req
     ss.goto_tab = TAB_REC
     flash("rec_top", "success", f"AI가 추천한 운동 {len(ids)}개를 등록했습니다. 운동을 열어 세트를 기록하세요.")
@@ -373,6 +380,9 @@ def exercise_card(ex, day_key, recommended=False):
         else:
             st.caption(f"중량 입력 기준: {ex['weight_basis']}")
             video_block(ex)
+        plan = st.session_state.rec_plan.get(ex_id) if recommended else None
+        if plan:
+            st.markdown(f"**AI 권장(참고용)** {ai.describe_plan(plan)}")
         st.divider()
         show_flash(f"rec_{ex_id}")
         input_rows(ex)
@@ -413,6 +423,12 @@ def tab_record():
     if req:
         st.caption(f"{req['part']} · 장비 {req['equipment']} · 난이도 {req['level']} — "
                    "운동을 열어 세트별 중량과 반복 횟수를 입력하세요. 칸은 비어 있는 상태로 시작합니다.")
+    plans = [ss.rec_plan[i] for i in ss.rec_ids if i in ss.rec_plan]
+    if plans and req and req.get("body"):
+        sm = ai.summarize_plans(plans)
+        st.info(f"오늘의 권장 운동량(참고용): 운동 {sm['exercises']}개 · 총 {sm['sets']}세트 · 약 {sm['minutes']}분 "
+                f"({ai.describe_body(req['body'])}). 개인 처방이 아닌 초기 참고값이니 가볍게 시작해 "
+                "컨디션에 맞게 조절하세요. 의학적 조언이 아닙니다.")
     catalog = all_catalog()
     for ex_id in ss.rec_ids:
         exercise_card(catalog[ex_id], "record_day", recommended=True)
@@ -517,6 +533,18 @@ def ai_form():
     equipment = st.selectbox("장비", ai.EQUIPMENT_OPTIONS, key="ai_equipment")
     level = st.radio("난이도", ai.LEVEL_OPTIONS, horizontal=True, key="ai_level")
     count = st.slider("운동 개수", ai.MIN_COUNT, ai.MAX_COUNT, 4, key="ai_count")
+    with st.expander("내 신체 정보로 권장 운동량 받기 (선택)"):
+        st.caption("키·현재 몸무게·목표 몸무게를 모두 입력하면, 위 조건과 결합해 운동별 권장 세트·횟수·시작 중량과 "
+                   "하루 운동량을 참고용으로 제안합니다. 모두 비우면 운동 목록만 추천합니다.")
+        c1, c2, c3 = st.columns(3)
+        height = c1.number_input("키(cm)", min_value=0.0, max_value=500.0, step=1.0, value=None,
+                                 key="ai_height", format="%g")
+        weight = c2.number_input("현재 몸무게(kg)", min_value=0.0, max_value=500.0, step=0.5, value=None,
+                                 key="ai_weight", format="%g")
+        goal = c3.number_input("목표 몸무게(kg)", min_value=0.0, max_value=500.0, step=0.5, value=None,
+                               key="ai_goal", format="%g")
+        st.caption("입력한 신체 정보는 이번 추천 요청에만 AI로 전송되며 저장·백업되지 않습니다(새로고침하면 사라집니다). "
+                   "결과는 개인 처방이 아닌 참고용 초기값이며 의학적 조언이 아닙니다.")
     st.caption("추가 요청 예시 (누르면 아래 입력칸에 채워집니다)")
     for row in (ai.EXTRA_EXAMPLES[:2], ai.EXTRA_EXAMPLES[2:]):
         for col, text in zip(st.columns(2), row):
@@ -525,14 +553,15 @@ def ai_form():
     extra = st.text_area(f"추가 요청 (선택, {ai.MAX_EXTRA_LEN}자 이내)", max_chars=ai.MAX_EXTRA_LEN,
                          key="ai_extra", placeholder="예: 집에서 할 수 있는 운동 위주로")
     st.caption("이름·회사명 같은 개인정보나 사내 정보는 입력하지 마세요. "
-               "AI에는 위 조건과 해당 부위의 기본 운동명만 보내며, 저장한 기록·중량·메모는 보내지 않습니다.")
+               "AI에는 위 조건과 해당 부위의 기본 운동명(신체 정보를 입력하면 그 값도)만 보내며, "
+               "저장한 기록·중량·메모는 보내지 않습니다.")
     if ai.mentions_medical(extra):
         st.info("의료·부상·통증 관련 내용이 있어 일반적인 운동 정보로만 답하도록 요청합니다. "
                 "통증이나 부상이 있다면 전문가와 상담하세요.")
     left = max(ai.MAX_GENERATIONS_PER_SESSION - ss.ai_generations, 0)
     if st.button("AI 운동 추천 받기", type="primary", disabled=left == 0):
         with st.status("AI가 운동을 추천하는 중입니다…", expanded=True) as box:
-            run_generation(part, equipment, level, count, extra, progress=box.markdown)
+            run_generation(part, equipment, level, count, extra, height, weight, goal, progress=box.markdown)
         st.rerun()
     _, model = ai_client.load_settings()
     st.caption(f"이번 세션에서 남은 추천 횟수 {left}회 · 모델 {model}")
@@ -604,7 +633,7 @@ def main():
     with t4:
         tab_backup()
     st.divider()
-    st.caption("참고 영상과 운동 목록은 일반적인 정보입니다. 개인 상태에 따른 운동 처방을 제공하지 않습니다.")
+    st.caption("참고 영상과 운동 목록은 일반적인 정보입니다. 권장 세트·횟수·시작 중량은 개인 처방이 아닌 참고용 초기값이며 의학적 조언이 아닙니다.")
 
 
 main()
