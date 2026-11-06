@@ -5,7 +5,7 @@
 | 작성/갱신 | 2026-10-27 (초안 이후 구현 결과 반영), 2026-11-06 (v1: AI 운동 후보 생성), 2026-11-06 (v2: AI 중심 흐름 재구성) |
 | 형태 | Python + Streamlit 웹앱, Streamlit Community Cloud 배포 |
 | 저장소 | https://github.com/yhbaeee/workout-log-2 (v1: https://github.com/yhbaeee/workout-log) |
-| 배포 URL | (Streamlit 배포 후 기입) |
+| 배포 URL | https://workout-log-2-azbvjjgct57uwdt8dhfpgd.streamlit.app/ |
 
 ## 1. 배경과 목적
 운동 기록을 메모장에 의존하면 날짜별 운동량 파악이 어렵고, 부위별 운동과 자세를 매번 검색해야 한다. 날짜·부위 선택, 기본 운동 후보와 짧은 자세 영상, 세트별 중량·횟수 기록을 한 화면에서 제공하는 가벼운 기록 앱을 만든다. (교육용 개인 미니 프로젝트)

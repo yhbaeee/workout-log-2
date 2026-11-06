@@ -60,7 +60,7 @@ python -m pytest -q tests
 `docs/screenshots/`에 최종 버전 화면 캡처(PC 및 모바일 폭)가 있습니다.
 
 ## 배포 (Streamlit Community Cloud)
-배포 URL: (Streamlit 배포 후 기입)
+배포 URL: https://workout-log-2-azbvjjgct57uwdt8dhfpgd.streamlit.app/
 저장소: https://github.com/yhbaeee/workout-log-2 (`main`, 진입 파일 `app.py`). `main`에 push하면 배포 앱에 자동 반영됩니다. v1(AI 후보 생성 버전)은 https://github.com/yhbaeee/workout-log 입니다.
 
 1. 이 폴더를 GitHub 저장소에 올립니다(`.gitignore` 확인, 개인 백업 파일 제외).

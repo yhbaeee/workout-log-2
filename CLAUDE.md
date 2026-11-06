@@ -57,7 +57,8 @@ AI가 추천한 운동(키가 없으면 기본 운동 26개 목록)을 한조바
 - Playwright(Chrome): 가짜 응답 리허설 서버로 먼저 통과(17항목)한 뒤 실제 서버에서 실제 호출 2회. ① 하체/상관없음/초보/4개 → 기본 운동 4개 연결, ② 하체/맨몸/초보/4개 → 새 AI 운동 2개 채택·조건 불일치 2개 제외(14.9초). 추천→탭 자동 이동→세트 저장→기록 보기(날짜 자동 맞춤)→생성 과정→내 운동 목록, 모바일 390px 가로 스크롤 없음(16항목).
 - 발견·수정: 추천 직후 상단 안내 문구가 첫 입력 때 사라지면서 위치가 밀려 열어 둔 expander가 닫히던 문제 → `show_flash`가 `st.empty()` 자리를 항상 남기도록 수정.
 - 주의: AI가 조건과 다른 운동을 섞어 보내면(예: 맨몸 요청에 장비 운동) 제외하므로 요청 개수보다 적게 등록될 수 있다.
+- 배포(2026-11-06): Streamlit Community Cloud에 Secrets로 키를 등록해 배포. 접속 확인 결과 탭 4개 정상, AI 추천 버튼 활성(키 인식, 모델 gpt-6-astra), 오류 없음(배포 앱에서 AI 실제 호출은 하지 않음).
 
 ## 배포
-- Community Cloud: 저장소 `yhbaeee/workout-log-2`, 브랜치 `main`, 파일 `app.py`, Python 3.12. 앱 설정 Secrets에 `OPENAI_API_KEY = "키"`를 등록하면 AI가 동작한다(`.env`는 저장소에 없다). 배포 URL: (배포 후 기입).
+- Community Cloud: 저장소 `yhbaeee/workout-log-2`, 브랜치 `main`, 파일 `app.py`, Python 3.12. 앱 설정 Secrets에 `OPENAI_API_KEY = "키"`를 등록하면 AI가 동작한다(`.env`는 저장소에 없다). 배포 URL: https://workout-log-2-azbvjjgct57uwdt8dhfpgd.streamlit.app/.
 - push하면 배포 앱이 재배포된다. 외부 공개·push는 사용자 확인 후 진행.
